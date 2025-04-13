@@ -9,6 +9,7 @@ import { openaiService } from "../openai/openaiService";
 import { translationService } from "../translation/translationService";
 import type { GenerateQuestionsDto } from "./dto/generate-questions.dto";
 import type { GetQuestionFiltersDto } from "./dto/get-question-filters.dto";
+import type { ValidationResult } from "./dto/question-validation-result.dto";
 import { CategoryModel } from "./models/category.model";
 import { OldQuestionModel, type QuestionType } from "./models/question-old.model";
 import { type ILocaleSchema, type IQuestion, QuestionModel, type QuestionStatus } from "./models/question.model";
@@ -557,23 +558,50 @@ export class QuestionService {
       );
     }
   }
+  // Валидация одной с возвратом полной информации
+  async validateGeneratedQuestionCorrectness(questionId: string): Promise<ServiceResponse<ValidationResult | null>> {
+    return this.validateSingle(questionId, true);
+  }
 
-  async validateGeneratedQuestionCorrectness(questionId: string): Promise<
-    ServiceResponse<{
-      isValid: boolean;
-      questionId: string;
-      suggestion: {
-        question: string;
-        correct: string | number[];
-        wrong: string[];
-      };
-      totalTokensUsed: number;
-      completionTokensUsed: number;
-    } | null>
-  > {
+  // Валидация одной без дополнительных условий
+  async validateQuestionCorrectness(
+    questionId: string,
+  ): Promise<ServiceResponse<Omit<ValidationResult, "questionId"> | null>> {
+    const result = await this.validateSingle(questionId, false);
+    if (!result.success || !result.responseObject) return result;
+
+    const { questionId: _, ...rest } = result.responseObject!;
+    return ServiceResponse.success("Question validated", rest);
+  }
+
+  // Валидация списка с возвратом полной информации
+  async validateGeneratedQuestionsCorrectness(
+    questionIds: string[],
+  ): Promise<ServiceResponse<ValidationResult[] | null>> {
+    return this.validateMultiple(questionIds, true);
+  }
+
+  // Валидация списка без дополнительных условий
+  async validateQuestionsCorrectness(
+    questionIds: string[],
+  ): Promise<ServiceResponse<Omit<ValidationResult, "questionId">[] | null>> {
+    const result = await this.validateMultiple(questionIds, false);
+    if (!result.success || !result.responseObject) return result;
+
+    const simplified = result.responseObject?.map(({ questionId: _, ...rest }) => rest) ?? [];
+    return ServiceResponse.success("Questions validated", simplified);
+  }
+
+  // Приватная логика валидации одной
+  private async validateSingle(
+    questionId: string,
+    onlyGenerated: boolean,
+  ): Promise<ServiceResponse<ValidationResult | null>> {
     try {
-      const question = await QuestionModel.findOne({ _id: questionId, status: "generated" });
+      const query: Record<string, any> = { _id: questionId };
+      if (onlyGenerated) query.status = "generated";
 
+      const question = await QuestionModel.findOne(query);
       if (!question) {
         return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
       }
@@ -598,91 +626,30 @@ export class QuestionService {
     }
   }
 
-  async validateGeneratedQuestionsCorrectness(questionIds: string[]): Promise<
-    ServiceResponse<
-      | {
-          questionId: string;
-          isValid: boolean;
-          suggestion: {
-            question: string;
-            correct: string | number[];
-            wrong: string[];
-          };
-          totalTokensUsed: number;
-          completionTokensUsed: number;
-        }[]
-      | null
-    >
-  > {
+  // Приватная логика валидации списка
+  private async validateMultiple(
+    questionIds: string[],
+    onlyGenerated: boolean,
+  ): Promise<ServiceResponse<ValidationResult[] | null>> {
     try {
-      const questions = await QuestionModel.find({ _id: { $in: questionIds }, status: "generated" });
+      const query: any = { _id: { $in: questionIds } };
+      if (onlyGenerated) query.status = "generated";
+
+      const questions = await QuestionModel.find(query);
       if (!questions.length) {
-        return ServiceResponse.failure("No generated questions found", null, StatusCodes.NOT_FOUND);
+        return ServiceResponse.failure(
+          onlyGenerated ? "No generated questions found" : "No questions found",
+          null,
+          StatusCodes.NOT_FOUND,
+        );
       }
-      const results = await Promise.all(
+
+      const results: ValidationResult[] = await Promise.all(
         questions.map(async (question) => {
           const { isValid, suggestion, totalTokensUsed, completionTokensUsed } =
             await openaiService.validateQuestionCorrectness(question);
           return {
             questionId: question._id!.toString(),
-            isValid,
-            suggestion,
-            totalTokensUsed,
-            completionTokensUsed,
-          };
-        }),
-      );
-      return ServiceResponse.success("Questions validated", results);
-    } catch (error) {
-      logger.error(`Error validating questions correctness: ${error as Error}`);
-      return ServiceResponse.failure(
-        error instanceof Error ? error.message : "Failed to validate questions correctness",
-        null,
-        StatusCodes.INTERNAL_SERVER_ERROR,
-      );
-    }
-  }
-
-  async validateQuestionCorrectness(questionId: string) {
-    try {
-      const question = await QuestionModel.findById(questionId);
-
-      if (!question) {
-        return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
-      }
-
-      const { isValid, suggestion, totalTokensUsed, completionTokensUsed } =
-        await openaiService.validateQuestionCorrectness(question);
-
-      return ServiceResponse.success("Question validated", {
-        isValid,
-        suggestion,
-        totalTokensUsed,
-        completionTokensUsed,
-      });
-    } catch (error) {
-      logger.error(`Error validating question correctness: ${error as Error}`);
-      return ServiceResponse.failure(
-        error instanceof Error ? error.message : "Failed to validate question correctness",
-        null,
-        StatusCodes.INTERNAL_SERVER_ERROR,
-      );
-    }
-  }
-
-  async validateQuestionsCorrectness(questionIds: string[]) {
-    try {
-      const questions = await QuestionModel.find({ _id: { $in: questionIds } });
-
-      if (!questions.length) {
-        return ServiceResponse.failure("No questions found", null, StatusCodes.NOT_FOUND);
-      }
-
-      const results = await Promise.all(
-        questions.map(async (question) => {
-          const { isValid, suggestion, totalTokensUsed, completionTokensUsed } =
-            await openaiService.validateQuestionCorrectness(question);
-          return {
             isValid,
             suggestion,
             totalTokensUsed,
