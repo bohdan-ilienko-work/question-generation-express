@@ -2,7 +2,6 @@ const mongooseOld = require(require.resolve("mongoose-old", { paths: ["./mongoos
 
 const { Schema, model, Document, Model } = mongooseOld;
 
-// Определяем интерфейсы
 export interface ICategoryLocaleSchema {
   language: string;
   value: string;
@@ -17,11 +16,13 @@ export interface ICategory extends Document {
   locales: ICategoryLocaleSchema[];
 }
 
-// Определяем схему без дженериков
-const CategoryLocaleSchema = new Schema({
-  language: { type: String, required: true },
-  value: { type: String, required: true },
-});
+const CategoryLocaleSchema = new Schema(
+  {
+    language: { type: String, required: true },
+    value: { type: String, required: true },
+  },
+  { _id: false },
+);
 
 const CategorySchema = new Schema({
   _id: { type: Number, required: true },
@@ -32,5 +33,4 @@ const CategorySchema = new Schema({
   locales: { type: [CategoryLocaleSchema], required: true, default: [] },
 });
 
-// Экспортируем модель с правильной типизацией
 export const CategoryModel: typeof Model = model("Category", CategorySchema);

@@ -74,7 +74,6 @@ export class CategoryService {
     try {
       logger.info("🔄 Syncing categories from old DB to new DB...");
 
-      // Получаем все категории из старой БД
       const oldCategories = await CategoryModelOld.find().lean();
 
       if (!oldCategories.length) {
@@ -82,16 +81,13 @@ export class CategoryService {
         return ServiceResponse.failure("No categories to sync.", null, 404);
       }
 
-      // Создаём массив новых категорий
       const newCategories = oldCategories.map(({ _id, ...rest }: { _id: number; [key: string]: any }) => ({
         ...rest,
-        _id, // Сохраняем старый `_id`
+        _id,
       }));
 
-      // Удаляем существующие записи с такими же `_id`
       await CategoryModelNew.deleteMany({ _id: { $in: oldCategories.map((c: { _id: number }) => c._id) } });
 
-      // Вставляем новые данные
       await CategoryModelNew.insertMany(newCategories);
 
       logger.info(`✅ Synced ${newCategories.length} categories successfully!`);
@@ -122,24 +118,18 @@ export class CategoryService {
     try {
       const { name, parentId, locales } = categoryData;
 
-      // Проверка на уникальность по имени
-      const [existingCategoryNew, existingCategoryOld] = await Promise.all([
-        CategoryModelNew.findOne({ name }),
-        CategoryModelOld.findOne({ name }),
-      ]);
-      if (existingCategoryNew || existingCategoryOld) {
-        logger.error("❌ Category with this name already exists.");
-        return ServiceResponse.failure("Category with this name already exists.", null, 400);
-      }
-
-      // Получаем родительскую категорию
       const existingParentCategoryNew = parentId ? await CategoryModelNew.findById(parentId).lean() : null;
 
       const ancestors = parentId ? [...(existingParentCategoryNew?.ancestors ?? []), parentId] : [];
 
-      const generatedId = Date.now(); // Один id на обе категории
+      const [maxIdOld, maxIdNew] = await Promise.all([
+        CategoryModelOld.findOne().sort({ _id: -1 }).limit(1),
+        CategoryModelNew.findOne().sort({ _id: -1 }).limit(1),
+      ]);
+      const maxId = maxIdOld?._id > maxIdNew?._id! ? maxIdOld : maxIdNew; // Берём максимальный id из обеих категорий
 
-      // Создаём новые документы
+      const generatedId = maxId ? maxId._id + 1 : 1; // Генерируем новый id на основе максимального id в базе
+
       const newCategory = new CategoryModelNew({
         _id: generatedId,
         name,
@@ -156,7 +146,6 @@ export class CategoryService {
         locales,
       });
 
-      // Сохраняем в базу
       await Promise.all([newCategory.save(), oldCategory.save()]);
 
       logger.info("🗂️ Category saved to the database.");
@@ -174,15 +163,6 @@ export class CategoryService {
       if (name) updateData.name = name;
       if (locales) updateData.locales = locales;
       //TODO: add parentId and ancestors handling
-
-      const [existingCategoryNew, existingCategoryOld] = await Promise.all([
-        CategoryModelNew.findOne({ name }),
-        CategoryModelOld.findOne({ name }),
-      ]);
-      if (existingCategoryNew || existingCategoryOld) {
-        logger.error("❌ Category with this name already exists.");
-        return ServiceResponse.failure("Category with this name already exists.", null, 400);
-      }
 
       await Promise.all([
         CategoryModelNew.findByIdAndUpdate(categoryId, updateData),
@@ -237,10 +217,6 @@ export class CategoryService {
         requiredLocales.map(async (locale) => {
           const translation = await translationService.translateText(
             originalText,
-            // sourceLanguage.toUpperCase() as SourceLanguageCode,
-            // sourceLanguage === "en"
-            //   ? ("EN-US" as SourceLanguageCode)
-            //   : (sourceLanguage.toUpperCase() as SourceLanguageCode),
             sourceLanguage === "en" ? ("en-GB" as SourceLanguageCode) : (sourceLanguage as SourceLanguageCode),
             locale as TargetLanguageCode,
           );
