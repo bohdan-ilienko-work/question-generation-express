@@ -551,7 +551,7 @@ export class QuestionService {
   > {
     try {
       const query: Record<string, any> = { _id: questionId };
-      if (onlyGenerated) query.status = "generated";
+      // if (onlyGenerated) query.status = "generated";
 
       const question = await QuestionModel.findOne(query);
       if (!question) {
@@ -593,7 +593,8 @@ export class QuestionService {
       const questions = await QuestionModel.find({ _id: { $in: questionIds }, status: "generated" });
       if (!questions.length) {
         return ServiceResponse.failure(
-          onlyGenerated ? "No generated questions found" : "No questions found",
+          // onlyGenerated ? "No generated questions found" : "No questions found",
+          "No questions found",
           null,
           StatusCodes.NOT_FOUND,
         );
