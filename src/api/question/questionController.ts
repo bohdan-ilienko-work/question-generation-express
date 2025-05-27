@@ -22,9 +22,9 @@ export class QuestionController {
   };
 
   getGeneratedQuestions: RequestHandler = async (req: Request, res: Response) => {
-    const { limit = 10, page = 1 } = req.query;
+    const { limit = 10, page = 1, ...filters } = req.query;
 
-    const serviceResponse = await questionService.getGeneratedQuestions(+limit, +page);
+    const serviceResponse = await questionService.getGeneratedQuestions(+limit, +page, filters);
 
     handleServiceResponse(serviceResponse, res);
   };
@@ -230,6 +230,18 @@ export class QuestionController {
   checkForDuplicateQuestions: RequestHandler = async (req: Request, res: Response) => {
     const { categoryId } = req.params;
     const serviceResponse = await questionService.checkForDuplicateQuestions(categoryId);
+    handleServiceResponse(serviceResponse, res);
+  };
+
+  updateQuestionsCategory: RequestHandler = async (req, res) => {
+    const { questionIds, categoryId } = req.body;
+    const serviceResponse = await questionService.updateQuestionsCategory(questionIds, categoryId);
+    handleServiceResponse(serviceResponse, res);
+  };
+
+  updateGeneratedQuestionsCategory: RequestHandler = async (req, res) => {
+    const { questionIds, categoryId } = req.body;
+    const serviceResponse = await questionService.updateGeneratedQuestionsCategory(questionIds, categoryId);
     handleServiceResponse(serviceResponse, res);
   };
 }

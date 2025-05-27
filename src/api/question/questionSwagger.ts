@@ -466,3 +466,43 @@ questionRegistry.registerPath({
   responses: createApiResponse(z.object({}), "Success"),
   security: [{ BearerAuth: [] }],
 });
+
+questionRegistry.registerPath({
+  method: "patch",
+  path: "/questions/history/update-category",
+  tags: ["Questions (History)"],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            questionIds: z.array(z.string()),
+            categoryId: z.string(),
+          }),
+        },
+      },
+    },
+  },
+  responses: createApiResponse(z.object({}), "Success"),
+  security: [{ BearerAuth: [] }],
+});
+
+questionRegistry.registerPath({
+  method: "patch",
+  path: "/questions/generated/update-category",
+  tags: ["Questions (Generated)"],
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            questionIds: z.array(z.string()),
+            categoryId: z.string(),
+          }),
+        },
+      },
+    },
+  },
+  responses: createApiResponse(z.object({}), "Success"),
+  security: [{ BearerAuth: [] }],
+});

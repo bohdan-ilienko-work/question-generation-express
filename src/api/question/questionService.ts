@@ -74,6 +74,9 @@ export class QuestionService {
   async getGeneratedQuestions(
     limit: number,
     page: number,
+    filters: {
+      category?: string;
+    },
   ): Promise<
     ServiceResponse<{
       questions: IQuestion[];
@@ -86,16 +89,21 @@ export class QuestionService {
       const validLimit = !limit || limit <= 0 || Number.isNaN(Number(limit)) ? 10 : limit;
       const validPage = !page || page <= 0 || Number.isNaN(Number(page)) ? 1 : page;
 
+      // Формируем query с учётом filters.category
+      const query: any = { status: "generated" };
+      if (filters.category) {
+        query.categoryId = +filters.category;
+      }
+
       const [questions, questionsCount] = await Promise.all([
-        QuestionModel.find({ status: "generated" })
-          .sort({ createdAt: -1 }) // Сортировка по createdAt (новые сначала)
+        QuestionModel.find(query)
+          .sort({ createdAt: -1 })
           .limit(validLimit)
           .skip((validPage - 1) * validLimit)
           .lean(),
-        QuestionModel.countDocuments({ status: "generated" }),
+        QuestionModel.countDocuments(query),
       ]);
 
-      // Рассчитываем totalPages
       const totalPages = questionsCount > 0 ? Math.ceil(questionsCount / validLimit) : 1;
 
       return ServiceResponse.success<{
@@ -111,6 +119,7 @@ export class QuestionService {
       return logError(error, "Error getting generated questions");
     }
   }
+
   async getGeneratedQuestion(questionId: string): Promise<ServiceResponse<IQuestion | null>> {
     const question = await QuestionModel.findOne({
       _id: questionId,
@@ -736,6 +745,49 @@ export class QuestionService {
       });
     } catch (error) {
       return logError(error, "Error checking for duplicate questions");
+    }
+  }
+
+  async updateQuestionsCategory(questionIds: string[], categoryId: string) {
+    try {
+      const questionsUpdateResult = await QuestionModel.updateMany(
+        { _id: { $in: questionIds } },
+        { $set: { categoryId } },
+      );
+      const oldQuestionsUpdateResult = await OldQuestionModel.updateMany(
+        { _id: { $in: questionIds } },
+        { $set: { categoryId } },
+      );
+      if (
+        questionsUpdateResult.modifiedCount === 0 ||
+        oldQuestionsUpdateResult.modifiedCount === 0 ||
+        questionsUpdateResult.modifiedCount !== oldQuestionsUpdateResult.modifiedCount
+      ) {
+        return ServiceResponse.failure("Questions not found", null, StatusCodes.NOT_FOUND);
+      }
+      return ServiceResponse.success("Questions category updated", {
+        modifiedCount: questionsUpdateResult.modifiedCount,
+      });
+    } catch (error) {
+      return logError(error, "Error updating questions category");
+    }
+  }
+
+  async updateGeneratedQuestionsCategory(questionIds: string[], categoryId: string) {
+    try {
+      const questionsUpdateResult = await QuestionModel.updateMany(
+        { _id: { $in: questionIds }, status: "generated" },
+        { $set: { categoryId } },
+      );
+      if (questionsUpdateResult.modifiedCount === 0) {
+        return ServiceResponse.failure("Questions not found", null, StatusCodes.NOT_FOUND);
+      }
+
+      return ServiceResponse.success("Questions category updated", {
+        modifiedCount: questionsUpdateResult.modifiedCount,
+      });
+    } catch (error) {
+      return logError(error, "Error updating questions category");
     }
   }
 }

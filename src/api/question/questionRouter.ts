@@ -290,4 +290,32 @@ questionRouter.post(
   questionController.validateQuestionsCorrectness,
 );
 
+questionRouter.patch(
+  "/history/update-category",
+  accessTokenGuard,
+  validateRequest(
+    z.object({
+      body: z.object({
+        questionIds: z.array(z.string()),
+        categoryId: z.number(),
+      }),
+    }),
+  ),
+  questionController.updateQuestionsCategory,
+);
+
+questionRouter.patch(
+  "/generated/update-category",
+  accessTokenGuard,
+  validateRequest(
+    z.object({
+      body: z.object({
+        questionIds: z.array(z.string()),
+        categoryId: z.number(),
+      }),
+    }),
+  ),
+  questionController.updateGeneratedQuestionsCategory,
+);
+
 //#endregion
