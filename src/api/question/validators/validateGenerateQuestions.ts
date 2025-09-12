@@ -9,7 +9,18 @@ export const validateGenerateQuestions = z.object({
     temperature: z.number().min(0).max(2).optional(),
     // model: z.string().default("gpt-3.5-turbo").optional(),
     model: z
-      .enum(["gpt-3.5-turbo", "gpt-4-turbo", "gpt-4", "gpt-4o", "gpt-4o-mini", "o1", "o1-mini", "o3", "o3-mini"])
+      .enum([
+        "gpt-3.5-turbo",
+        "gpt-4-turbo",
+        "gpt-4",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "o1",
+        "o1-mini",
+        "o3",
+        "o3-mini",
+        "gpt-5",
+      ])
       .default("gpt-4o")
       .optional(),
     type: z.enum(["map", "choice"]).optional(),
