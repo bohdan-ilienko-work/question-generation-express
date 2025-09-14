@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package imagelinks;
+
+option go_package = "imagelinks";
+
+
+enum QuestionType {
+  CHOICE = 0;
+  NUMERICAL = 1;
+  MAP = 2;
+}
+
+message Coordinates { double lat = 1; double lon = 2; }
+
+message Link { string url = 1; string title = 2; string source = 3; }
+
+message ImageLinksResult { repeated Link links = 1; }
+
+message JobStatus {
+  string id = 1;
+  string status = 2;     // queued | processing | done | error
+  int64 createdAt = 3;
+  int64 updatedAt = 4;
+  string error = 5;      // optional
+  string summary = 6;    // human-readable summary
+  string questionId = 7; // ⬅️ добавили
+}
+
+message JobId { string id = 1; }
+
+message FindLinksByQuestionRequest {
+  QuestionType type = 1;
+  string language = 2;
+  string question = 3;
+
+  // CHOICE
+  string correctText = 4;
+  repeated string wrong = 5;
+
+  // NUMERICAL
+  double correctNumber = 6;
+
+  // MAP
+  Coordinates correctCoords = 7;
+
+  // Options
+  int32 limit = 8;   // default 12
+  string model = 9;  // e.g. "gpt-4o-mini"
+  bool rank = 10;    // default true
+  bool validate = 11;// default true
+  string questionId = 12; // ⬅️ добавили
+}
+
+message ListJobsRequest {
+  int32 limit = 1;
+  int32 page = 2;
+  repeated string statuses = 3;
+  string q = 4;
+  int64 createdAtFrom = 5;
+  int64 createdAtTo = 6;
+  int64 updatedAtFrom = 7;
+  int64 updatedAtTo = 8;
+  optional bool hasError = 9;
+  string questionId = 10; // ⬅️ фильтр по questionId
+}
+
+message JobListItem {
+  string id = 1;
+  string status = 2;
+  int64 createdAt = 3;
+  int64 updatedAt = 4;
+  string summary = 5;
+  string error = 6;
+  string questionId = 7; // ⬅️ добавили
+}
+
+message JobListResponse {
+  repeated JobListItem items = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 limit = 4;
+  int32 pages = 5;
+}
+
+service ImageLinks {
+  rpc FindLinksByQuestion(FindLinksByQuestionRequest) returns (ImageLinksResult);
+  rpc CreateJob(FindLinksByQuestionRequest) returns (JobStatus);
+  rpc GetJob(JobId) returns (JobStatus);
+  rpc GetJobResult(JobId) returns (ImageLinksResult);
+  rpc ListJobs(ListJobsRequest) returns (JobListResponse);
+}

@@ -734,7 +734,7 @@ No incorrect options.`;
       tool_choice: { type: "function", function: { name: "mark_duplicates" } },
     });
 
-    const functionCall = response.choices[0]?.message.tool_calls?.[0]?.function;
+    const functionCall = response.choices[0]?.message.function_call;
     if (!functionCall?.arguments) return [];
 
     try {

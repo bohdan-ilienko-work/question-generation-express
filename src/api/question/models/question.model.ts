@@ -16,6 +16,16 @@ export enum QuestionType {
   Map = "map",
 }
 
+/** Suggested image metadata saved from the microservice */
+export interface ISuggestedImage {
+  id: string; // uuid v4
+  url: string;
+  title?: string;
+  source?: string;
+  origin?: string; // e.g. "image-links"
+  createdAt: Date;
+}
+
 export interface IQuestion extends Document {
   categoryId: number | ICategory;
   status: QuestionStatus;
@@ -33,6 +43,9 @@ export interface IQuestion extends Document {
   createdAt: Date;
   updatedAt: Date;
   source?: string;
+
+  /** New: suggested image links proposed by the microservice */
+  suggestedImages: ISuggestedImage[];
 }
 
 const LocaleSchema = new Schema<ILocaleSchema>({
@@ -42,6 +55,19 @@ const LocaleSchema = new Schema<ILocaleSchema>({
   wrong: { type: [String], required: false },
   isValid: { type: Boolean, default: false },
 });
+
+/** Embedded subdocument without own _id; we use our string id */
+const SuggestedImageSchema = new Schema<ISuggestedImage>(
+  {
+    id: { type: String, required: true }, // uuid v4
+    url: { type: String, required: true },
+    title: { type: String },
+    source: { type: String },
+    origin: { type: String },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: false },
+);
 
 const QuestionSchema = new Schema<IQuestion>(
   {
@@ -63,6 +89,9 @@ const QuestionSchema = new Schema<IQuestion>(
     locales: { type: [LocaleSchema], required: true },
     isValid: { type: Boolean, default: false },
     source: { type: String },
+
+    /** New: where we store proposed links */
+    suggestedImages: { type: [SuggestedImageSchema], default: [] },
   },
   { timestamps: true },
 );

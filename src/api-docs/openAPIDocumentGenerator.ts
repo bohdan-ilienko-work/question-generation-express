@@ -6,6 +6,7 @@ import { healthCheckRegistry } from "@/api/healthCheck/healthCheckRouter";
 // import { openaiRegistry } from "@/api/openai/openaiRouter";
 // import { questionRegistry } from "@/api/question/questionRouter";
 
+import { imagesRegistry } from "@/api/images/images.registry";
 import { questionRegistry } from "@/api/question/questionSwagger";
 import { statsRegistry } from "@/api/stats/statsRouter";
 import { userRegistry } from "@/api/user/userRouter";
@@ -19,6 +20,7 @@ export function generateOpenAPIDocument() {
     questionRegistry,
     statsRegistry,
     categoryRegistry,
+    imagesRegistry,
   ]);
   const generator = new OpenApiGeneratorV3(registry.definitions);
 
