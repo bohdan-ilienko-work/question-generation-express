@@ -78,7 +78,7 @@ export class ImagesService {
       this.isInitialized = true;
       logger.info(`✅ gRPC client to image-links initialized @ ${addr}`);
     } catch (error) {
-      logger.error(`Failed to initialize gRPC client: ${error}`);
+      logger.info(`Failed to initialize gRPC client: ${error}`);
     }
   }
 
