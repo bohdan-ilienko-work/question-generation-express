@@ -79,7 +79,7 @@ export class ImagesService {
       console.log(`✅ gRPC client to image-links initialized @ ${addr}`);
       //   logger.info(`✅ gRPC client to image-links initialized @ ${addr}`);
     } catch (error) {
-      console.log(`Failed to initialize gRPC client: ${error}`);
+      console.error(`Failed to initialize gRPC client: ${error}`);
       //   logger.info(`Failed to initialize gRPC client: ${error}`);
     }
   }
