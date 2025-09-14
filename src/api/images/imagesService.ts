@@ -76,9 +76,11 @@ export class ImagesService {
       const addr = process.env.IMAGE_LINKS_GRPC_ADDR || "localhost:50031";
       this.grpcClient = await createImageLinksClient(addr);
       this.isInitialized = true;
-      logger.info(`✅ gRPC client to image-links initialized @ ${addr}`);
+      console.log(`✅ gRPC client to image-links initialized @ ${addr}`);
+      //   logger.info(`✅ gRPC client to image-links initialized @ ${addr}`);
     } catch (error) {
-      logger.info(`Failed to initialize gRPC client: ${error}`);
+      console.log(`Failed to initialize gRPC client: ${error}`);
+      //   logger.info(`Failed to initialize gRPC client: ${error}`);
     }
   }
 
