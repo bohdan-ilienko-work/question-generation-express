@@ -35,8 +35,8 @@ export interface IQuestion extends Document {
   difficulty: number; // 1-5
   requiredLanguages: string[];
   audioId?: string;
-  imageId?: string;
-  authorId?: mongoose.Schema.Types.ObjectId;
+  imageId?: mongoose.Types.ObjectId; // <-- ObjectId instead of string
+  authorId?: mongoose.Types.ObjectId;
   tags: string[];
   locales: ILocaleSchema[];
   isValid: boolean;
@@ -44,7 +44,7 @@ export interface IQuestion extends Document {
   updatedAt: Date;
   source?: string;
 
-  /** New: suggested image links proposed by the microservice */
+  /** Proposed links from the microservice */
   suggestedImages: ISuggestedImage[];
 }
 
@@ -79,18 +79,26 @@ const QuestionSchema = new Schema<IQuestion>(
       required: true,
     },
     track: { type: String },
-    type: { type: String, enum: Object.values(QuestionType), required: true, default: QuestionType.Choice },
+    type: {
+      type: String,
+      enum: Object.values(QuestionType),
+      required: true,
+      default: QuestionType.Choice,
+    },
     difficulty: { type: Number, min: 1, max: 5, required: true },
     requiredLanguages: { type: [String], required: true },
     audioId: { type: String },
-    imageId: { type: String },
-    authorId: { type: mongoose.Schema.Types.ObjectId, ref: "Author", required: false },
+
+    // <-- store as ObjectId and optionally reference "Image" collection
+    imageId: { type: Schema.Types.ObjectId, ref: "Image" },
+
+    authorId: { type: Schema.Types.ObjectId, ref: "Author", required: false },
     tags: { type: [String], required: true },
     locales: { type: [LocaleSchema], required: true },
     isValid: { type: Boolean, default: false },
     source: { type: String },
 
-    /** New: where we store proposed links */
+    /** Where we store proposed links */
     suggestedImages: { type: [SuggestedImageSchema], default: [] },
   },
   { timestamps: true },

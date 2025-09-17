@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package imagegen;
 
+// --- already existed ---
 message Link {
   string url = 1;
   string title = 2;
@@ -11,7 +12,7 @@ message Link {
 message AcceptFoundLinksRequest {
   string questionId = 1;
   repeated Link links = 2;
-  string origin = 3; // optional, например "image-links"
+  string origin = 3; // optional, e.g. "image-links"
 }
 
 message Ack {
@@ -19,6 +20,42 @@ message Ack {
   string message = 2;
 }
 
+// --- NEW: payloads to ship compressed image bytes ---
+
+// File format info
+message VariantFormat {
+  string ext = 1;   // e.g. "png"
+  string mime = 2;  // e.g. "image/png"
+}
+
+// Dimensions & size of a variant
+message VariantMetadata {
+  VariantFormat format = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint64 size = 4;  // bytes
+}
+
+// One image variant (high/low)
+message Variant {
+  bytes data = 1;          // raw image bytes (PNG in нашем кейсе)
+  VariantMetadata metadata = 2;
+}
+
+// Request to accept a compressed image for a question
+message AcceptCompressedImageRequest {
+  string questionId = 1;   // target question
+  string name = 2;         // human-readable name (uuid base, etc.)
+  string hash = 3;         // sha256 base64 (content hash of source)
+  Variant high = 4;        // high-res PNG variant
+  Variant low = 5;         // low-res PNG variant
+  string origin = 6;       // optional, e.g. "image-compress"
+}
+
 service Generator {
+  // existed
   rpc AcceptFoundLinks (AcceptFoundLinksRequest) returns (Ack);
+
+  // NEW: accept compressed image bytes + metadata
+  rpc AcceptCompressedImage (AcceptCompressedImageRequest) returns (Ack);
 }

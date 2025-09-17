@@ -47,3 +47,16 @@ export const ListJobsQueryValidator = z.object({
     questionId: z.string().optional(),
   }),
 });
+
+export const AcceptImageBodySchema = z.object({
+  questionId: z.string().min(1),
+  url: z.string().url(),
+  name: z.string().min(1).max(64).optional(),
+  highWidth: z.number().int().positive().max(4096).optional(),
+  lowWidth: z.number().int().positive().max(4096).optional(),
+  quality: z.number().int().min(0).max(100).optional(),
+});
+
+export const AcceptImageRequestValidator = z.object({
+  body: AcceptImageBodySchema,
+});

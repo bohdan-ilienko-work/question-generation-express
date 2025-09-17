@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package imagecompress;
+
+// ---- Requests ----
+message CreateImageCompressJobRequest {
+  string questionId = 1;
+  string url        = 2;
+  string name       = 3;  // необязательно, можно передавать "image" / slug
+  uint32 highWidth  = 4;  // дефолт 1600
+  uint32 lowWidth   = 5;  // дефолт 640
+  uint32 quality    = 6;  // 0..100, дефолт 82
+}
+
+message JobId { string id = 1; }
+
+// ---- Status/Listing ----
+message JobStatus {
+  string id        = 1;
+  string status    = 2;   // queued | processing | done | error
+  int64  createdAt = 3;
+  int64  updatedAt = 4;
+  string error     = 5;   // optional
+  string questionId = 6;
+  string name       = 7;
+  int32  progress   = 8;  // 0..100
+}
+
+message ListImageJobsRequest {
+  int32 limit   = 1;
+  int32 page    = 2;
+  repeated string statuses = 3; // queued|processing|done|error
+  string q      = 4;            // search by id/name/questionId
+  string questionId = 5;
+  bool   hasError = 6;
+  int64  createdAtFrom = 7;
+  int64  createdAtTo   = 8;
+}
+
+message JobListItem {
+  string id        = 1;
+  string status    = 2;
+  int64  createdAt = 3;
+  int64  updatedAt = 4;
+  string error     = 5;
+  string questionId = 6;
+  string name       = 7;
+  int32  progress   = 8;
+}
+
+message ListImageJobsResponse {
+  repeated JobListItem items = 1;
+  int32 total = 2;
+  int32 page  = 3;
+  int32 limit = 4;
+  int32 pages = 5;
+}
+
+// ---- Result ----
+message VariantFormat { string ext = 1; string mime = 2; }
+
+message ImageVariantMeta {
+  uint32 width = 1;
+  uint32 height = 2;
+  uint64 size = 3;
+  VariantFormat format = 4;
+  string path = 5; // информативно (grpc://...)
+}
+
+message SourceMeta {
+  string mime = 1;
+  uint64 size = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+}
+
+message ImageProcessResult {
+  string name = 1;
+  string hash = 2;
+  ImageVariantMeta high = 3;
+  ImageVariantMeta low  = 4;
+  SourceMeta source = 5;
+}
+
+// ---- Service ----
+service ImageCompress {
+  rpc CreateJob      (CreateImageCompressJobRequest) returns (JobStatus);
+  rpc GetJob         (JobId)                         returns (JobStatus);
+  rpc GetJobResult   (JobId)                         returns (ImageProcessResult);
+  rpc ListJobs       (ListImageJobsRequest)          returns (ListImageJobsResponse);
+}

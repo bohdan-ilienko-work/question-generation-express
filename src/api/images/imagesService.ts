@@ -3,7 +3,11 @@ import { logger } from "@/server";
 import type { Metadata } from "@grpc/grpc-js";
 import { StatusCodes } from "http-status-codes";
 import { v4 as uuidv4 } from "uuid";
+import { createImageCompressClient } from "../../grpc/imagecompress.client"; // +++ NEW +++
 import { createImageLinksClient } from "../../grpc/imagelinks.client";
+
+import { Binary } from "bson";
+import { Types } from "mongoose";
 import {
   QuestionType as DbQuestionType,
   type ILocaleSchema,
@@ -12,7 +16,12 @@ import {
   QuestionModel,
 } from "../question/models/question.model";
 
-/** gRPC payloads */
+import { ImageModel } from "./models/image.model";
+
+export type VariantFormat = { ext: string; mime: string };
+export type VariantMetadata = { format: VariantFormat; width: number; height: number; size: number };
+export type Variant = { data: Buffer; metadata: VariantMetadata };
+
 type ChoiceReq = {
   type: "CHOICE";
   language: string;
@@ -67,6 +76,9 @@ export class ImagesService {
   grpcClient!: Awaited<ReturnType<typeof createImageLinksClient>>;
   isInitialized = false;
 
+  compressClient!: Awaited<ReturnType<typeof createImageCompressClient>>;
+  isCompressInitialized = false;
+
   constructor() {
     this.init();
   }
@@ -82,9 +94,48 @@ export class ImagesService {
       console.error(`Failed to initialize gRPC client: ${error}`);
       //   logger.info(`Failed to initialize gRPC client: ${error}`);
     }
+
+    // +++ init compress gRPC client +++
+    try {
+      const caddr =
+        process.env.IMAGE_COMPRESS_GRPC_ADDR ||
+        process.env.IMAGE_COMPRESS_GRPC_URL ||
+        process.env.IMAGE_LINKS_GRPC_ADDR || // допускаем общий адрес
+        "localhost:50031";
+      this.compressClient = await createImageCompressClient(caddr);
+      this.isCompressInitialized = true;
+      console.log(`✅ gRPC client to image-compress initialized @ ${caddr}`);
+    } catch (error) {
+      console.error(`Failed to initialize gRPC image-compress client: ${error}`);
+    }
   }
 
-  /** Batch: create jobs for a list of question IDs */
+  async acceptImage(payload: {
+    questionId: string;
+    url: string;
+    name?: string;
+    highWidth?: number;
+    lowWidth?: number;
+    quality?: number;
+  }) {
+    if (!this.isCompressInitialized) {
+      return ServiceResponse.failure("compress gRPC client not initialized", null, StatusCodes.SERVICE_UNAVAILABLE);
+    }
+    try {
+      const md = this.compressClient.makeMeta(this.apiKeyCompress());
+      const res = await this.compressClient.CreateJob(payload, md);
+      return ServiceResponse.success("Job created", res);
+    } catch (error: any) {
+      const code =
+        error?.code === this.compressClient.status.INVALID_ARGUMENT
+          ? StatusCodes.BAD_REQUEST
+          : error?.code === this.compressClient.status.NOT_FOUND
+            ? StatusCodes.NOT_FOUND
+            : StatusCodes.INTERNAL_SERVER_ERROR;
+      return ServiceResponse.failure(error?.details || error?.message || "gRPC error", null, code);
+    }
+  }
+
   async generateImagesForQuestions(ids: string[], opts?: PlanOptions) {
     if (!this.isInitialized) {
       return ServiceResponse.failure("gRPC client not initialized", null, StatusCodes.SERVICE_UNAVAILABLE);
@@ -134,7 +185,6 @@ export class ImagesService {
     }
   }
 
-  /** Get a job status */
   async getJob(jobId: string) {
     if (!this.isInitialized) {
       return ServiceResponse.failure("gRPC client not initialized", null, StatusCodes.SERVICE_UNAVAILABLE);
@@ -149,7 +199,6 @@ export class ImagesService {
     }
   }
 
-  /** Get job result (links) */
   async getJobResult(jobId: string) {
     if (!this.isInitialized) {
       return ServiceResponse.failure("gRPC client not initialized", null, StatusCodes.SERVICE_UNAVAILABLE);
@@ -165,7 +214,6 @@ export class ImagesService {
     }
   }
 
-  /** Proxy ListJobs with filters (including questionId) */
   async listJobs(query: {
     limit: number;
     page: number;
@@ -189,21 +237,23 @@ export class ImagesService {
     }
   }
 
-  // Helpers
-
   private makeMeta(questionId?: string): Metadata {
     const md = this.grpcClient.makeMeta(this.apiKey());
     if (questionId) md.add("x-question-id", String(questionId));
     return md;
   }
 
+  private apiKeyCompress() {
+    return (
+      process.env.IMAGE_COMPRESS_GRPC_API_KEY || process.env.IMAGE_LINKS_GRPC_API_KEY || process.env.GRPC_API_KEY || ""
+    );
+  }
+
   private apiKey() {
     return process.env.IMAGE_LINKS_GRPC_API_KEY || process.env.GRPC_API_KEY || "";
   }
 
-  /** Map DB question -> gRPC request (CHOICE | NUMERICAL | MAP) */
   private mapQuestionToGrpcRequest(qDoc: IQuestion, questionId: string, opts?: PlanOptions): FindLinksGrpcRequest {
-    // DB only guarantees "choice" | "map"; detect "numerical" by shape when needed.
     const rawType = String(qDoc.type || "").toLowerCase();
     const locale = this.pickLocale(qDoc.locales);
     const language = locale?.language || "en";
@@ -217,7 +267,6 @@ export class ImagesService {
       validate: opts?.validate,
     };
 
-    // If locale.correct is a number => treat as NUMERICAL even if DB type does not define it.
     if (typeof (locale?.correct as any) === "number" || rawType === "numerical" || rawType === "number") {
       const correctNumber = Number(locale?.correct);
       if (!Number.isFinite(correctNumber)) throw new Error('Numerical question must have numeric "correct"');
@@ -248,7 +297,6 @@ export class ImagesService {
       return payload;
     }
 
-    // MAP fallback
     const coords = this.extractCoords(locale?.correct as [number, number]);
     if (!coords) throw new Error("Map question must have [lat, lon] in locale.correct");
     const payload: MapReq = {
@@ -295,11 +343,6 @@ export class ImagesService {
     return results;
   }
 
-  /**
-   * Persist suggested image links for a question.
-   * - Generates a uuid for each link as its stable id
-   * - Deduplicates by URL against already stored suggestedImages
-   */
   async saveSuggestedLinks(
     questionId: string,
     links: Array<{ url: string; title?: string; source?: string }>,
@@ -359,9 +402,6 @@ export class ImagesService {
     }
   }
 
-  /**
-   * Remove a suggested image entry by its generated id.
-   */
   async deleteSuggestedImage(questionId: string, imageId: string) {
     try {
       if (!questionId || !imageId) {
@@ -386,6 +426,131 @@ export class ImagesService {
     } catch (err: any) {
       logger.error({ err, questionId, imageId }, "deleteSuggestedImage failed");
       return ServiceResponse.failure(err?.message || "Internal error", null, StatusCodes.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  async saveCompressedImage(payload: {
+    questionId: string;
+    name: string;
+    hash: string;
+    high: Variant;
+    low: Variant;
+    origin?: string;
+    uploaderId?: string;
+  }) {
+    try {
+      const { questionId, name, hash, high, low, uploaderId } = payload;
+
+      if (!questionId) {
+        return ServiceResponse.failure("questionId is required", null, StatusCodes.BAD_REQUEST);
+      }
+      if (!high?.data?.length || !low?.data?.length) {
+        return ServiceResponse.failure("high and low variants are required", null, StatusCodes.BAD_REQUEST);
+      }
+
+      const q = await QuestionModel.findById(questionId).select("_id").lean();
+      if (!q) {
+        return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
+      }
+
+      const uploader = "67d7f80144f2170026f243a0";
+      const uploaderObjId = uploader ? new Types.ObjectId(uploader) : undefined;
+
+      const doc = await ImageModel.create({
+        uploaderId: uploaderObjId,
+        high: {
+          data: high.data,
+          metadata: {
+            format: { ext: high.metadata.format.ext, mime: high.metadata.format.mime },
+            width: high.metadata.width,
+            height: high.metadata.height,
+            size: high.metadata.size,
+          },
+        },
+        low: {
+          data: low.data,
+          metadata: {
+            format: { ext: low.metadata.format.ext, mime: low.metadata.format.mime },
+            width: low.metadata.width,
+            height: low.metadata.height,
+            size: low.metadata.size,
+          },
+        },
+        name,
+        hash,
+      });
+
+      await QuestionModel.findByIdAndUpdate(
+        questionId,
+        { $set: { imageId: doc._id } },
+        { new: true, projection: { _id: 1, imageId: 1 } },
+      ).lean();
+
+      logger.info({ questionId, imageId: String(doc._id) }, "compressed image saved and linked");
+      return ServiceResponse.success("Stored", { imageId: String(doc._id) });
+    } catch (err: any) {
+      logger.error({ err, ctx: "saveCompressedImage" }, "failed to store compressed image");
+      return ServiceResponse.failure(err?.message || "Internal error", null, StatusCodes.INTERNAL_SERVER_ERROR);
+    }
+  }
+
+  async getImageVariantByQuestion(questionId: string, variant: "low" | "high") {
+    try {
+      if (!questionId) {
+        return ServiceResponse.failure("questionId is required", null, 400);
+      }
+
+      const q = await QuestionModel.findById(questionId).select("imageId").lean();
+      if (!q) return ServiceResponse.failure("Question not found", null, 404);
+
+      const imgId = (q as any).imageId as Types.ObjectId | undefined | null;
+      if (!imgId) return ServiceResponse.failure("Question has no imageId", null, 404);
+
+      const projection =
+        variant === "high"
+          ? { name: 1, hash: 1, updatedAt: 1, "high.data": 1, "high.metadata": 1 }
+          : { name: 1, hash: 1, updatedAt: 1, "low.data": 1, "low.metadata": 1 };
+
+      const doc = await ImageModel.findById(imgId, projection).exec();
+      if (!doc) return ServiceResponse.failure("Image document not found", null, 404);
+
+      const node: any = variant === "high" ? (doc as any).high : (doc as any).low;
+      if (!node?.data) return ServiceResponse.failure(`Image ${variant} variant not found`, null, 404);
+
+      let buf: Buffer;
+      const raw = node.data;
+      if (Buffer.isBuffer(raw)) {
+        buf = raw;
+      } else if (raw?.buffer instanceof ArrayBuffer) {
+        buf = Buffer.from(raw.buffer, raw.byteOffset || 0, raw.byteLength || raw.length || 0);
+      } else if (Array.isArray(raw?.data)) {
+        buf = Buffer.from(raw.data);
+      } else if (raw instanceof Binary) {
+        // @ts-ignore
+        buf = Buffer.from(raw.buffer);
+      } else {
+        buf = Buffer.from(raw);
+      }
+
+      const mime = node?.metadata?.format?.mime || "image/png";
+      const ext = node?.metadata?.format?.ext || "png";
+      const base = doc.get("name") || String(doc._id);
+      const filename = `${base}_${variant}.${ext}`;
+      const size = buf.byteLength;
+
+      const etag = `${(doc.get("hash") as string) || String(doc._id)}-${variant}-${size}`;
+
+      return ServiceResponse.success("OK", {
+        data: buf,
+        mime,
+        filename,
+        etag,
+        size,
+        lastModified: doc.get("updatedAt") as Date | undefined,
+      });
+    } catch (err: any) {
+      logger.error({ err, questionId, variant }, "getImageVariantByQuestion failed");
+      return ServiceResponse.failure(err?.message || "Internal error", null, 500);
     }
   }
 }

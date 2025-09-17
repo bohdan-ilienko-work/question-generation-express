@@ -3,9 +3,16 @@ import express, { type Router } from "express";
 import { z } from "zod";
 import { accessTokenGuard } from "../auth/middlewares/accessToken.middleware";
 import { imagesController } from "./imagesController";
-import { BatchGenerateBodySchema } from "./validators";
+import { AcceptImageBodySchema, BatchGenerateBodySchema } from "./validators";
 
 export const imagesRouter: Router = express.Router();
+
+imagesRouter.post(
+  "/accept-image",
+  accessTokenGuard,
+  validateRequest(z.object({ body: AcceptImageBodySchema })),
+  imagesController.acceptImage,
+);
 
 imagesRouter.post(
   "/find-images",
@@ -49,4 +56,18 @@ imagesRouter.get(
     }),
   ),
   imagesController.listJobs,
+);
+
+imagesRouter.get(
+  "/get-image-by-question/:questionId/:variant(low|high)",
+  // accessTokenGuard, // если нужно публично — уберите guard
+  validateRequest(
+    z.object({
+      params: z.object({
+        questionId: z.string().min(1),
+        variant: z.enum(["low", "high"]),
+      }),
+    }),
+  ),
+  imagesController.getImageByQuestionVariant,
 );

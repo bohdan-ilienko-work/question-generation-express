@@ -36,8 +36,15 @@ app.set("trust proxy", true);
 // Middlewares
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
-app.use(helmet());
+const CLIENT_URL = env.CLIENT_URL || "http://localhost:5173";
+app.use(cors({ origin: CLIENT_URL, credentials: true }));
+// стало
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" }, // <- разрешаем встраивание с других origin
+    crossOriginEmbedderPolicy: false, // на всякий случай, чтобы не требовать require-corp
+  }),
+);
 app.use(rateLimiter);
 app.use(cookieParser());
 
@@ -57,7 +64,7 @@ app.use("/auth", authRouter);
 app.use("/questions", questionRouter);
 app.use("/stats", statsRouter);
 app.use("/categories", categoryRouter);
-app.use("/images", imagesRouter);
+app.use("/images", helmet.crossOriginResourcePolicy({ policy: "cross-origin" }), imagesRouter);
 
 // Swagger UI
 app.use(openAPIRouter);
@@ -68,40 +75,68 @@ app.use(errorHandler());
 // --- HTTP server + WebSockets bootstrap ---
 const httpServer = http.createServer(app);
 initSocket(httpServer); // now WS server is live on the same HTTP port
-
-// --- gRPC server bootstrap (imagegen.Generator.AcceptFoundLinks) ---
+// --- gRPC server bootstrap (imagegen.Generator.*) ---
 (async () => {
   try {
     const address = process.env.GENERATOR_GRPC_ADDR || "0.0.0.0:50041";
     const inboundApiKey = process.env.GENERATOR_GRPC_API_KEY || process.env.GRPC_API_KEY;
+    const maxMsg = Number(process.env.GRPC_MAX_MSG_BYTES || 64 * 1024 * 1024);
 
     await startGeneratorGrpcServer(
       address,
-      async ({ questionId, links, origin }) => {
-        const count = Array.isArray(links) ? links.length : 0;
+      {
+        // existed
+        onFoundLinks: async ({ questionId, links, origin }) => {
+          const count = Array.isArray(links) ? links.length : 0;
 
-        // Console log
-        logger.info(
-          {
+          logger.info(
+            {
+              questionId,
+              origin: origin || "image-links",
+              count,
+              preview: links.slice(0, 3).map((l) => ({ title: l.title, url: l.url })),
+            },
+            "AcceptFoundLinks received",
+          );
+          if (count > 3) {
+            logger.info({ more: count - 3 }, "AcceptFoundLinks truncated preview");
+          }
+
+          realtimeService.notifyFoundLinks({ questionId, links, origin });
+          await imagesService.saveSuggestedLinks(questionId, links, origin);
+          return { ok: true, message: `received ${count} link(s)` };
+        },
+
+        // NEW
+        onCompressedImage: async ({ questionId, name, hash, high, low, origin }) => {
+          const hi = high?.metadata;
+          const lo = low?.metadata;
+
+          logger.info(
+            {
+              questionId,
+              name,
+              origin: origin || "image-compress",
+              high: { bytes: high?.data?.length ?? 0, w: hi?.width, h: hi?.height },
+              low: { bytes: low?.data?.length ?? 0, w: lo?.width, h: lo?.height },
+            },
+            "AcceptCompressedImage received",
+          );
+
+          const res = await imagesService.saveCompressedImage({
             questionId,
-            origin: origin || "image-links",
-            count,
-            preview: links.slice(0, 3).map((l) => ({ title: l.title, url: l.url })),
-          },
-          "AcceptFoundLinks received",
-        );
-        if (count > 3) {
-          logger.info({ more: count - 3 }, "AcceptFoundLinks truncated preview");
-        }
+            name,
+            hash,
+            high,
+            low,
+            origin,
+          });
 
-        // 🔔 Push to WebSocket subscribers (both room + broadcast)
-        realtimeService.notifyFoundLinks({ questionId, links, origin });
-
-        await imagesService.saveSuggestedLinks(questionId, links, origin);
-
-        return { ok: true, message: `received ${count} link(s)` };
+          const ok = !!res.success;
+          return { ok, message: ok ? "stored" : res.message || "store error" };
+        },
       },
-      { inboundApiKey },
+      { inboundApiKey, maxMessageBytes: maxMsg },
     );
 
     logger.info({ address }, "✅ gRPC Generator server started");

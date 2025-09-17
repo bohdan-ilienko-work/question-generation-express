@@ -1,11 +1,13 @@
 import { statsService } from "@/api/stats/statsService";
 import { ServiceResponse } from "@/common/models/serviceResponse";
 import logError from "@/common/utils/logError";
-import { redisClient } from "@/common/utils/redisClient";
 import { logger } from "@/server";
 import type { TargetLanguageCode } from "deepl-node";
 import { StatusCodes } from "http-status-codes";
 import type mongoose from "mongoose";
+import { Types } from "mongoose";
+import { OldImageModel } from "../images/models/image-old.model";
+import { ImageModel } from "../images/models/image.model";
 import { openaiService } from "../openai/openaiService";
 import { translationService } from "../translation/translationService";
 import type { GenerateQuestionsDto } from "./dto/generate-questions.dto";
@@ -16,6 +18,33 @@ import { OldQuestionModel, type QuestionType } from "./models/question-old.model
 import { type ILocaleSchema, type IQuestion, QuestionModel, type QuestionStatus } from "./models/question.model";
 
 export class QuestionService {
+  private normalizeBuffer(raw: any): Buffer {
+    if (!raw) return Buffer.alloc(0);
+    if (Buffer.isBuffer(raw)) return raw;
+
+    // { type: 'Buffer', data: [...] }
+    if (raw?.type === "Buffer" && Array.isArray(raw?.data)) {
+      return Buffer.from(raw.data);
+    }
+
+    // BSON Binary -> Buffer
+    if (raw && typeof raw === "object" && (raw as any)._bsontype === "Binary" && (raw as any).buffer) {
+      // @ts-ignore
+      return Buffer.from((raw as any).buffer);
+    }
+
+    // ArrayBuffer / TypedArray
+    if (raw?.buffer instanceof ArrayBuffer) {
+      return Buffer.from(raw.buffer, raw.byteOffset || 0, raw.byteLength || raw.length || 0);
+    }
+
+    try {
+      return Buffer.from(raw);
+    } catch {
+      return Buffer.alloc(0);
+    }
+  }
+
   async getQuestions(getQuestionFiltersDto: GetQuestionFiltersDto): Promise<
     ServiceResponse<{
       questions: IQuestion[];
@@ -25,11 +54,9 @@ export class QuestionService {
   > {
     const { limit, page, difficulty, type, title, status } = getQuestionFiltersDto;
 
-    // Проверяем корректность входных параметров
     const validLimit = !limit || limit <= 0 || Number.isNaN(Number(limit)) ? 10 : limit;
     const validPage = !page || page <= 0 || Number.isNaN(Number(page)) ? 1 : page;
 
-    // Запросы выполняются параллельно для оптимизации
     const [questions, questionsCount] = await Promise.all([
       QuestionModel.find({
         locales: { $elemMatch: { question: { $regex: title || "", $options: "i" } } },
@@ -37,7 +64,7 @@ export class QuestionService {
         type: type ? { $eq: type } : { $exists: true },
         status: status && status !== "generated" ? { $eq: status } : { $ne: "generated" },
       })
-        .sort({ createdAt: -1 }) // Сортировка по createdAt (новые сначала)
+        .sort({ createdAt: -1 })
         .limit(validLimit)
         .skip((validPage - 1) * validLimit)
         .lean(),
@@ -49,7 +76,6 @@ export class QuestionService {
       }),
     ]);
 
-    // Рассчитываем totalPages
     const totalPages = questionsCount > 0 ? Math.ceil(questionsCount / validLimit) : 1;
 
     return ServiceResponse.success("Questions found", {
@@ -74,9 +100,7 @@ export class QuestionService {
   async getGeneratedQuestions(
     limit: number,
     page: number,
-    filters: {
-      category?: string;
-    },
+    filters: { category?: string },
   ): Promise<
     ServiceResponse<{
       questions: IQuestion[];
@@ -85,15 +109,11 @@ export class QuestionService {
     } | null>
   > {
     try {
-      // Проверяем корректность входных параметров
       const validLimit = !limit || limit <= 0 || Number.isNaN(Number(limit)) ? 10 : limit;
       const validPage = !page || page <= 0 || Number.isNaN(Number(page)) ? 1 : page;
 
-      // Формируем query с учётом filters.category
       const query: any = { status: "generated" };
-      if (filters.category) {
-        query.categoryId = +filters.category;
-      }
+      if (filters.category) query.categoryId = +filters.category;
 
       const [questions, questionsCount] = await Promise.all([
         QuestionModel.find(query)
@@ -106,11 +126,7 @@ export class QuestionService {
 
       const totalPages = questionsCount > 0 ? Math.ceil(questionsCount / validLimit) : 1;
 
-      return ServiceResponse.success<{
-        questions: IQuestion[];
-        questionsCount: number;
-        totalPages: number;
-      }>("Questions found", {
+      return ServiceResponse.success("Questions found", {
         questions,
         questionsCount,
         totalPages,
@@ -140,29 +156,17 @@ export class QuestionService {
         categoryId,
       })),
     );
-
-    return {
-      questions: savedQuestions,
-    };
+    return { questions: savedQuestions };
   }
 
   async findOrCreateCategory(categoryName: string) {
-    let category = await CategoryModel.findOne({
-      name: categoryName,
-    });
-
+    let category = await CategoryModel.findOne({ name: categoryName });
     if (!category) {
       category = await CategoryModel.create({
         name: categoryName,
-        locales: [
-          {
-            language: "en",
-            name: categoryName,
-          },
-        ],
+        locales: [{ language: "en", name: categoryName }],
       });
     }
-
     return category;
   }
 
@@ -174,21 +178,15 @@ export class QuestionService {
     } | null>
   > {
     try {
-      const { category: categoryId, prompt, requiredLanguages } = generateQuestionsDto;
+      const { category: categoryId, prompt } = generateQuestionsDto;
       const { questions, totalTokensUsed, completionTokensUsed } =
         await openaiService.generateQuestionsV3(generateQuestionsDto);
 
       const questionsIds: string[] = questions.map((question) => question.id);
-
       await QuestionModel.bulkSave(questions.map((q) => new QuestionModel(q)));
-
       await statsService.logQuestionGeneration(categoryId, questionsIds, totalTokensUsed, prompt);
 
-      return ServiceResponse.success<{
-        questions: any[];
-        totalTokensUsed: number;
-        completionTokensUsed: number;
-      }>("Questions generated", {
+      return ServiceResponse.success("Questions generated", {
         questions,
         totalTokensUsed,
         completionTokensUsed,
@@ -221,14 +219,9 @@ export class QuestionService {
       const questionsIds: string[] = questions.map((question) => question.id);
 
       await QuestionModel.bulkSave(questions.map((q) => new QuestionModel(q)));
-
       await statsService.logQuestionGeneration(categoryId, questionsIds, totalTokensUsed, boilerplateText);
 
-      return ServiceResponse.success<{
-        questions: any[];
-        totalTokensUsed: number;
-        completionTokensUsed: number;
-      }>("Questions parsed", {
+      return ServiceResponse.success("Questions parsed", {
         questions,
         totalTokensUsed,
         completionTokensUsed,
@@ -257,7 +250,6 @@ export class QuestionService {
 
   async rejectGeneratedQuestions(questionIds: string[]) {
     try {
-      // Удаляем только те вопросы, которые находятся в статусе "generated"
       const deleteResult = await QuestionModel.deleteMany({
         _id: { $in: questionIds },
         status: "generated",
@@ -279,9 +271,7 @@ export class QuestionService {
     try {
       const result = await this.rejectGeneratedQuestions([questionId]);
       return result.success
-        ? ServiceResponse.success<{
-            deletedCount: number;
-          }>("Question rejected", { deletedCount: result.responseObject?.deletedCount ?? 0 })
+        ? ServiceResponse.success("Question rejected", { deletedCount: result.responseObject?.deletedCount ?? 0 })
         : ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
     } catch (error) {
       return logError(error, "Error rejecting question");
@@ -290,37 +280,94 @@ export class QuestionService {
 
   async deleteQuestion(questionId: string) {
     const question = await QuestionModel.findByIdAndDelete(questionId);
-
     if (!question) {
       return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
     }
-
     return ServiceResponse.success<IQuestion>("Question deleted", question);
   }
 
   async deleteQuestionTranslation(questionId: string, language: string) {
     const question = await QuestionModel.findById(questionId);
-
     if (!question) {
       return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
     }
 
     const localeIndex = question.locales.findIndex((locale) => locale.language === language);
-
     if (localeIndex === -1) {
       return ServiceResponse.failure("Locale not found", null, StatusCodes.NOT_FOUND);
     }
 
     question.locales.splice(localeIndex, 1);
-
     await question.save();
 
     return ServiceResponse.success<IQuestion>("Question translation deleted", question);
   }
 
+  private toObjectId(id: any): Types.ObjectId {
+    if (id instanceof Types.ObjectId) return id;
+    return new Types.ObjectId(String(id));
+  }
+
+  private async replicateImageToOldDb(imageId: any): Promise<"copied" | "exists" | "missing"> {
+    if (!imageId) return "missing";
+
+    try {
+      const oid = this.toObjectId(imageId);
+
+      const exists = await OldImageModel.exists({ _id: oid });
+      if (exists) return "exists";
+
+      const src = await ImageModel.findById(oid).exec();
+      if (!src) return "missing";
+
+      const highMeta = (src as any).high?.metadata || {};
+      const lowMeta = (src as any).low?.metadata || {};
+
+      const payload: any = {
+        _id: oid,
+        name: (src as any).name,
+        hash: (src as any).hash,
+        uploaderId: (src as any).uploaderId,
+        createdAt: (src as any).createdAt,
+        updatedAt: (src as any).updatedAt,
+        high: {
+          data: this.normalizeBuffer((src as any).high?.data),
+          metadata: {
+            format: {
+              ext: highMeta?.format?.ext,
+              mime: highMeta?.format?.mime,
+            },
+            width: highMeta?.width,
+            height: highMeta?.height,
+            size: highMeta?.size,
+          },
+        },
+        low: {
+          data: this.normalizeBuffer((src as any).low?.data),
+          metadata: {
+            format: {
+              ext: lowMeta?.format?.ext,
+              mime: lowMeta?.format?.mime,
+            },
+            width: lowMeta?.width,
+            height: lowMeta?.height,
+            size: lowMeta?.size,
+          },
+        },
+      };
+
+      await new OldImageModel(payload).save();
+
+      logger.info({ imageId: String(oid) }, "replicated image to OldImageModel");
+      return "copied";
+    } catch (e: any) {
+      logger.warn({ imageId: String(imageId), err: e?.message }, "replicateImageToOldDb failed");
+      return "missing";
+    }
+  }
+
   async confirmGeneratedQuestions(questionIds: string[]) {
     try {
-      // Получаем вопросы из MongoDB, у которых статус "generated"
       const generatedQuestions = await QuestionModel.find({
         _id: { $in: questionIds },
         status: "generated",
@@ -330,16 +377,12 @@ export class QuestionService {
         return ServiceResponse.failure("No generated questions found", null, StatusCodes.NOT_FOUND);
       }
 
-      // Обновляем статус вопросов на "in_progress"
       await QuestionModel.updateMany(
         { _id: { $in: questionIds } },
         { $set: { status: "in_progress", updatedAt: new Date() } },
       );
 
-      // Языки, на которые нужно выполнить перевод
       const requiredLocales = ["ru", "uk", "en-US", "es", "fr", "de", "it", "pl", "tr"];
-
-      // Переводим вопросы
       const translationPromises = generatedQuestions.flatMap((question) =>
         requiredLocales.map(async (language) => {
           const translationResponse = await translationService.translateQuestion(
@@ -350,9 +393,7 @@ export class QuestionService {
           if (translationResponse.success && translationResponse.responseObject) {
             await QuestionModel.updateOne(
               { _id: question._id, "locales.language": language },
-              {
-                $set: { "locales.$": translationResponse.responseObject },
-              },
+              { $set: { "locales.$": translationResponse.responseObject } },
             ).then((updateResult) => {
               if (updateResult.matchedCount === 0) {
                 return QuestionModel.updateOne(
@@ -364,13 +405,20 @@ export class QuestionService {
           }
         }),
       );
-
       await Promise.all(translationPromises);
+
+      await Promise.all(
+        generatedQuestions.map(async (q) => {
+          const imgId = (q as any).imageId;
+          if (!imgId) return;
+          await this.replicateImageToOldDb(this.toObjectId(imgId));
+        }),
+      );
 
       const updatedQuestions = await QuestionModel.find({ _id: { $in: questionIds } });
 
       return ServiceResponse.success<IQuestion[]>(
-        "Questions confirmed and translated",
+        "Questions confirmed, translated and images replicated (if any)",
         updatedQuestions.map((q) => q.toJSON()),
       );
     } catch (error) {
@@ -391,21 +439,16 @@ export class QuestionService {
 
   async updateQuestion(questionId: string, question: IQuestion) {
     const updatedQuestion = await QuestionModel.findByIdAndUpdate(questionId, question, { new: true });
-
     if (!updatedQuestion) {
       return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
     }
-
     return ServiceResponse.success<IQuestion>("Question updated", updatedQuestion);
   }
 
   async updateGeneratedQuestion(questionId: string, question: IQuestion) {
     const updated = await QuestionModel.findOneAndUpdate(
       { _id: questionId, status: "generated" },
-      {
-        ...question,
-        updatedAt: new Date(),
-      },
+      { ...question, updatedAt: new Date() },
       { new: true },
     ).lean();
 
@@ -419,56 +462,53 @@ export class QuestionService {
   async confirmQuestion(questionId: string) {
     try {
       const question = await QuestionModel.findById(questionId);
-
       if (!question) {
         return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
       }
 
       let mainDbId = question.mainDbId;
-
       const rawQuestion = question.toObject();
 
       rawQuestion.status = "in_progress" as QuestionStatus;
       rawQuestion.track = "general";
-      // rawQuestion.type = QuestionType.Choice;
 
-      const ukrainianLocale = rawQuestion.locales.find((locale) => locale.language === "uk");
-      rawQuestion.locales = rawQuestion.locales.filter(
-        (locale) => locale.language !== "uk" && locale.language !== "en-US",
-      );
-      ukrainianLocale!.language = "ua";
+      const ukrainianLocale = rawQuestion.locales.find((l) => l.language === "uk");
+      rawQuestion.locales = rawQuestion.locales.filter((l) => l.language !== "uk" && l.language !== "en-US");
+      if (ukrainianLocale) {
+        ukrainianLocale.language = "ua";
+        rawQuestion.locales.push(ukrainianLocale);
+      }
+      rawQuestion.requiredLanguages = rawQuestion.locales.map((l) => l.language);
 
-      rawQuestion.locales.push(ukrainianLocale!);
-      rawQuestion.requiredLanguages = rawQuestion.locales.map((locale) => locale.language);
+      if ((rawQuestion as any).imageId) {
+        const oid = this.toObjectId((rawQuestion as any).imageId);
+        const rep = await this.replicateImageToOldDb(oid);
+        if (rep === "copied" || rep === "exists") {
+          (rawQuestion as any).imageId = oid;
+        } else {
+          (rawQuestion as any).imageId = undefined;
+        }
+      }
 
-      // Удаляем _id только если создаем новый документ, иначе используем старый mainDbId
       if (!mainDbId) {
         const biggestId = await OldQuestionModel.findOne().sort({ _id: -1 });
         mainDbId = biggestId ? biggestId._id + 1 : 1;
 
-        await new OldQuestionModel({
-          ...rawQuestion,
-          _id: mainDbId, // Устанавливаем корректный _id
-        }).save();
+        await new OldQuestionModel({ ...rawQuestion, _id: mainDbId }).save();
 
         question.mainDbId = mainDbId;
         await question.save();
       } else {
         const oldQuestion = await OldQuestionModel.findById(mainDbId);
-
         if (!oldQuestion) {
-          await new OldQuestionModel({
-            ...rawQuestion,
-            _id: mainDbId, // Используем существующий mainDbId
-          }).save();
+          await new OldQuestionModel({ ...rawQuestion, _id: mainDbId }).save();
         } else {
-          rawQuestion._id = mainDbId;
+          (rawQuestion as any)._id = mainDbId;
           await oldQuestion.updateOne(rawQuestion);
         }
       }
 
       logger.info(`Question confirmed: ${questionId} -> ${mainDbId}`);
-
       return ServiceResponse.success<IQuestion>("Question confirmed", question);
     } catch (error) {
       return logError(error, "Error confirming question");
@@ -477,17 +517,14 @@ export class QuestionService {
 
   async rejectQuestion(questionId: string) {
     const deletedQuestion = await QuestionModel.findByIdAndDelete(questionId);
-
     if (!deletedQuestion) {
       return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
     }
-
     return ServiceResponse.success<IQuestion>("Question rejected", deletedQuestion);
   }
 
   async validateTranslationBase(
     questionData: IQuestion | null,
-    // questionId: string,
     originalLanguage: string,
     targetLanguage: string,
   ): Promise<
@@ -506,7 +543,6 @@ export class QuestionService {
       questionData.locales.find((locale) => locale.language === originalLanguage) || questionData.locales[0];
 
     const translationLocale = questionData.locales.find((locale) => locale.language === targetLanguage);
-
     if (!translationLocale) {
       return ServiceResponse.failure("Translation not found", null, StatusCodes.NOT_FOUND);
     }
@@ -560,8 +596,6 @@ export class QuestionService {
   > {
     try {
       const query: Record<string, any> = { _id: questionId };
-      // if (onlyGenerated) query.status = "generated";
-
       const question = await QuestionModel.findOne(query);
       if (!question) {
         return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
@@ -601,12 +635,7 @@ export class QuestionService {
     try {
       const questions = await QuestionModel.find({ _id: { $in: questionIds }, status: "generated" });
       if (!questions.length) {
-        return ServiceResponse.failure(
-          // onlyGenerated ? "No generated questions found" : "No questions found",
-          "No questions found",
-          null,
-          StatusCodes.NOT_FOUND,
-        );
+        return ServiceResponse.failure("No questions found", null, StatusCodes.NOT_FOUND);
       }
 
       const results: ValidationResult[] = await Promise.all(
@@ -631,7 +660,6 @@ export class QuestionService {
   async validateQuestionCorrectness(questionId: string) {
     try {
       const question = await QuestionModel.findById(questionId);
-
       if (!question) {
         return ServiceResponse.failure("Question not found", null, StatusCodes.NOT_FOUND);
       }
@@ -662,12 +690,7 @@ export class QuestionService {
         questions.map(async (question) => {
           const { isValid, suggestion, totalTokensUsed, completionTokensUsed } =
             await openaiService.validateQuestionCorrectness(question);
-          return {
-            isValid,
-            suggestion,
-            totalTokensUsed,
-            completionTokensUsed,
-          };
+          return { isValid, suggestion, totalTokensUsed, completionTokensUsed };
         }),
       );
 
@@ -676,6 +699,7 @@ export class QuestionService {
       return logError(error, "Error validating questions correctness");
     }
   }
+
   async checkForDuplicateQuestions(categoryId: string): Promise<
     ServiceResponse<{
       duplicates: string[][];
@@ -710,21 +734,16 @@ export class QuestionService {
       for (const group of directGroups) {
         const main = group[0];
         if (!combinedMap.has(main)) combinedMap.set(main, new Set());
-        for (const id of group) {
-          combinedMap.get(main)!.add(id);
-        }
+        for (const id of group) combinedMap.get(main)!.add(id);
       }
 
       for (const group of semanticDuplicates) {
         const matchedQuestions = questions.filter((q) => group.includes(q.locales[0].question));
         const ids = matchedQuestions.map((q) => q._id.toString());
-
         if (ids.length > 1) {
           const main = ids[0];
           if (!combinedMap.has(main)) combinedMap.set(main, new Set());
-          for (const id of ids) {
-            combinedMap.get(main)!.add(id);
-          }
+          for (const id of ids) combinedMap.get(main)!.add(id);
         }
       }
 
@@ -733,16 +752,10 @@ export class QuestionService {
         .filter((group) => group.length > 1);
 
       if (!result.length) {
-        return ServiceResponse.success("No duplicate questions found", {
-          duplicates: [],
-          questions,
-        });
+        return ServiceResponse.success("No duplicate questions found", { duplicates: [], questions });
       }
 
-      return ServiceResponse.success("Duplicate questions found", {
-        duplicates: result,
-        questions,
-      });
+      return ServiceResponse.success("Duplicate questions found", { duplicates: result, questions });
     } catch (error) {
       return logError(error, "Error checking for duplicate questions");
     }
